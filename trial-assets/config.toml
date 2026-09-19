@@ -1,0 +1,22 @@
+﻿model = "auto_model/urm"
+model_provider = "gsb_relay"
+model_reasoning_effort = "high"
+model_context_window = 1000000
+model_auto_compact_token_limit = 950000
+model_catalog_json = "/work/model/model_catalog.json"
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+
+[model_providers.gsb_relay]
+name = "GSB project relay"
+base_url = "http://127.0.0.1:18742/v1"
+env_key = "GSB_API_KEY"
+wire_api = "responses"
+supports_websockets = false
+http_headers = { "Connection" = "close" }
+request_max_retries = 0
+stream_max_retries = 0
+stream_idle_timeout_ms = 300000

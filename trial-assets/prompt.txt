@@ -1,0 +1,10 @@
+我们在归档抓取链路里用 warcio 把「线上真实收到的 HTTP 响应」写成 WARC。最近发现：只要响应头里出现非 ASCII 字节（常见是历史服务器按 ISO-8859-1 发的头，例如某个 header 值里有 0xFF），写出来的 WARC 会把原始字节改掉——变成 UTF-8 再 %-encode（例如 \xff 被写成 %C3%BF）。这不是等价转写，而是篡改了网络上真实收到的字节，违反「response 记录应保存完整 HTTP 报文」的归档语义，也会让下游按字节比对 / digest 的流水线对不上。
+
+请修这条写入链路，目标是「写入 WARC 时，HTTP 头字节保持原样，不要用 UTF-8 %-encode 改写非 ASCII」：
+
+1. 用 payload 自带 HTTP 头（头+正文打包进 payload）创建 response 记录并写入时：若头值含非 ASCII 字节（至少覆盖单个 0xFF 这种 Latin-1 单字节），写出的 WARC 里对应 header 行必须仍是原始字节，不能变成 %C3%BF 这类 UTF-8 百分号编码。
+2. 用 StatusAndHeaders / http_headers= 显式传入、且值本身就是「按 Latin-1/原始字节语义」的非 ASCII 内容时，同样不得在写入 WARC 时被改成 UTF-8 %-encode。
+3. 兼容：纯 ASCII 头的现有行为保持不变；正常读回 ArchiveIterator、warcio check（在不动 gzip 完整性语义的前提下）、以及既有「Unicode 字符串 API 需要可序列化为 ASCII 头」的合法场景不要整库炸掉。若必须保留 %-encode 兜底，请做成可选/显式路径，默认的「抓包写入 / 原样落盘」路径不得再偷偷改字节。
+4. 读已有 WARC 再写回时，HTTP 头块应尽量按原始字节往返，不要因为中间走过字符串映射就把 Latin-1 字节变成 UTF-8 %-encode。
+
+补上能稳定复现「\xff 被写成 %C3%BF」并覆盖上述行为的离线测试，跑相关已有测试，更新写入/HTTP 头编码相关说明。当前环境的离线测试命令见 TRIAL_ENVIRONMENT.md。请直接在当前仓库修改，不要创建 git commit。
