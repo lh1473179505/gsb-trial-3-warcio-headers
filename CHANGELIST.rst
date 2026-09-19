@@ -1,3 +1,15 @@
+Unreleased
+~~~~~~~~~~
+
+- Preserve raw HTTP header bytes when writing WARC records: non-ASCII
+  header bytes (eg. a latin-1 ``0xFF``) are no longer rewritten as UTF-8
+  percent-encoded values (``%C3%BF``). HTTP headers are parsed and
+  serialized as ISO-8859-1 so captured responses and read/rewrite
+  round-trips keep the original bytes. The percent-encoding behavior
+  remains as a fallback for true unicode string headers and via the
+  explicit ``StatusAndHeaders.to_ascii_bytes()`` path.
+
+
 1.8.1
 ~~~~~
 
@@ -220,5 +232,4 @@
 ~~~
 
 Initial Release!
-
 

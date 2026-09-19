@@ -610,8 +610,14 @@ class TestWarcWriter(object):
 
         # verify http_headers
 
-        # match original
-        assert record.http_headers == parsed_record.http_headers
+        # match original (compare serialized header blocks, since headers
+        # containing true unicode are written via the explicit
+        # percent-encoding fallback but no longer mutated in place)
+        if record.http_headers:
+            assert (record.http_headers.to_http_headers_bytes() ==
+                    parsed_record.http_headers.to_http_headers_bytes())
+        else:
+            assert record.http_headers == parsed_record.http_headers
 
         if parsed_record.http_headers:
             assert rec_type in ('response', 'request', 'revisit')
@@ -783,7 +789,7 @@ class TestWarcWriter(object):
 
         validate_warcinfo(records[0])
 
-    def test_utf8_rewrite_content_adjust(self):
+    def test_utf8_rewrite_raw_headers_roundtrip(self):
         UTF8_PAYLOAD = u'\
 HTTP/1.0 200 OK\r\n\
 Content-Type: text/plain; charset="UTF-8"\r\n\
@@ -819,10 +825,13 @@ Content-Length: {0}\r\n\
         writer.write_record(record)
 
         raw_buff = writer.get_contents()
-        assert raw_buff.decode('utf-8') == RESPONSE_RECORD_UNICODE_HEADERS
+        # the http headers are preserved as raw bytes: the record is
+        # rewritten byte-for-byte identical, including the utf-8 encoded
+        # filename header -- no utf-8 percent-encoding is applied
+        assert raw_buff == UTF8_RECORD.encode('utf-8')
 
         for record in ArchiveIterator(writer.get_stream()):
-            assert record.length == 268
+            assert record.length == 226
 
     def test_identity(self):
         """ read(write(record)) should yield record """
@@ -843,4 +852,3 @@ Content-Length: {0}\r\n\
             assert new_rec.length == record.length
             assert new_rec.http_headers == record.http_headers
             assert new_rec.raw_stream.read() == payload
-

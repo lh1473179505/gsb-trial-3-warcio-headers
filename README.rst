@@ -323,6 +323,30 @@ The library also includes additional semantics for:
 Please refer to `warcwriter.py <warcio/warcwriter.py>`__ and
 `test/test\_writer.py <test/test_writer.py>`__ for additional examples.
 
+HTTP header byte encoding
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+HTTP header lines received on the wire are parsed and written back as
+raw bytes. Header lines are decoded with ISO-8859-1, which maps every
+byte to a single Unicode codepoint, and serialized the same way when a
+record is written. This preserves a captured response byte-for-byte:
+for example, a header containing a raw ``0xFF`` byte is written as
+``0xFF`` (and block/payload digests are computed over the original
+bytes), never rewritten as the UTF-8 percent-encoded sequence
+``%C3%BF``. Reading an existing WARC and writing it back therefore
+round-trips the HTTP header block unchanged.
+
+Header values passed to ``StatusAndHeaders`` as ``bytes`` are decoded as
+ISO-8859-1, so they keep the same raw-byte semantics.
+
+Only header values supplied as Python (Unicode) strings that contain
+characters outside the ISO-8859-1 range (which could not have been
+received as raw header bytes) are percent-encoded as UTF-8
+(`RFC 8187 <https://tools.ietf.org/html/rfc8187#section-3.2.3>`__) as a
+fallback so that writing never fails. The fully ASCII, percent-encoded
+serialization remains available explicitly via
+``StatusAndHeaders.to_ascii_bytes()``.
+
 WARCIO CLI: Indexing and Recompression
 --------------------------------------
 

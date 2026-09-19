@@ -114,8 +114,9 @@ class StatusAndHeaders(object):
         """
         Set buffer representing headers
         """
-        # HTTP headers %-encoded as ascii (see to_ascii_bytes for more info)
-        self.headers_buff = self.to_ascii_bytes(header_filter)
+        # HTTP headers serialized as raw bytes (see to_http_headers_bytes
+        # for more info)
+        self.headers_buff = self.to_http_headers_bytes(header_filter)
 
     def __repr__(self):
         return "StatusAndHeaders(protocol = '{0}', statusline = '{1}', \
@@ -165,6 +166,60 @@ headers = {2})".format(self.protocol, self.statusline, self.headers)
     def to_bytes(self, filter_func=None, encoding='utf-8'):
         return self.to_str(filter_func).encode(encoding) + b'\r\n'
 
+    def to_http_headers_bytes(self, filter_func=None):
+        """ Serialize the status line and headers to bytes for writing
+            to a WARC record.
+
+            Headers are encoded as ISO-8859-1 (latin-1), which maps each
+            codepoint 0-255 directly to the corresponding byte. Since
+            header values parsed from the wire (or passed in as bytes)
+            are decoded as ISO-8859-1, this preserves the original bytes
+            exactly -- non-ASCII bytes are *not* rewritten as UTF-8
+            percent-encoded values.
+
+            Only header values containing actual unicode characters
+            outside the latin-1 range (which can not have been received
+            as raw bytes) are percent-encoded as UTF-8 per:
+            https://tools.ietf.org/html/rfc8187#section-3.2.3
+            https://tools.ietf.org/html/rfc5987#section-3.2.2
+            so that writing never fails for unicode string headers.
+
+            If the entire headers block must be pure ascii, call
+            to_ascii_bytes() explicitly instead.
+        """
+        string = self.protocol
+
+        if string and self.statusline:
+            string += ' '
+
+        if self.statusline:
+            string += self.statusline
+
+        buff = self._encode_raw_header(string) + b'\r\n'
+
+        for h in self.headers:
+            if filter_func:
+                h = filter_func(h)
+                if not h:
+                    continue
+
+            buff += (self._encode_raw_header(h[0]) + b': ' +
+                     self._encode_raw_header(h[1]) + b'\r\n')
+
+        return buff + b'\r\n'
+
+    @staticmethod
+    def _encode_raw_header(value):
+        """ Encode a single status line / header name / header value
+            to bytes, preserving latin-1 codepoints as raw bytes.
+            Values with characters outside the latin-1 range are
+            percent-encoded as UTF-8 (see to_http_headers_bytes).
+        """
+        try:
+            return value.encode('iso-8859-1')
+        except UnicodeEncodeError:
+            return StatusAndHeaders._percent_encode_header_value(value).encode('ascii')
+
     def to_ascii_bytes(self, filter_func=None):
         """ Attempt to encode the headers block as ascii
             If encoding fails, call percent_encode_non_ascii_headers()
@@ -186,26 +241,37 @@ headers = {2})".format(self.protocol, self.statusline, self.headers)
             https://tools.ietf.org/html/rfc8187#section-3.2.3
             https://tools.ietf.org/html/rfc5987#section-3.2.2
         """
-        def do_encode(m):
-            return "*={0}''".format(encoding) + quote(to_native_str(m.group(1)))
-
         for index in range(len(self.headers) - 1, -1, -1):
             curr_name, curr_value = self.headers[index]
             try:
                 # test if header is ascii encodable, no action needed
                 curr_value.encode('ascii')
             except:
-                # if single value header, (eg. no ';'), %-encode entire header
-                if ';' not in curr_value:
-                    new_value = quote(curr_value)
+                self.headers[index] = (curr_name,
+                                       self._percent_encode_header_value(curr_value,
+                                                                         encoding))
 
-                else:
-                # %-encode value in ; name="value"
-                    new_value = self.ENCODE_HEADER_RX.sub(do_encode, curr_value)
-                    if new_value == curr_value:
-                        new_value = quote(curr_value)
+    @staticmethod
+    def _percent_encode_header_value(value, encoding='UTF-8'):
+        """ Percent-encode a non-ascii header value as UTF-8 per:
+            https://tools.ietf.org/html/rfc8187#section-3.2.3
+            https://tools.ietf.org/html/rfc5987#section-3.2.2
 
-                self.headers[index] = (curr_name, new_value)
+            If the value is a single value (eg. has no ';'), %-encode
+            the entire value. Otherwise, %-encode the value in
+            ; name="value" parameters using the *=UTF-8'' notation.
+        """
+        def do_encode(m):
+            return "*={0}''".format(encoding) + quote(to_native_str(m.group(1)))
+
+        if ';' not in value:
+            return quote(value)
+
+        new_value = StatusAndHeaders.ENCODE_HEADER_RX.sub(do_encode, value)
+        if new_value == value:
+            new_value = quote(value)
+
+        return new_value
 
     # act like a (case-insensitive) dictionary of headers, much like other
     # python http headers apis including http.client.HTTPMessage
@@ -229,9 +295,22 @@ class StatusAndHeadersParser(object):
     Parser which consumes a stream support readline() to read
     status and headers and return a StatusAndHeaders object
     """
-    def __init__(self, statuslist, verify=True):
+    def __init__(self, statuslist, verify=True, decode_encoding=None):
         self.statuslist = statuslist
         self.verify = verify
+        # If set, every status/header line is decoded with this encoding.
+        # Pass 'iso-8859-1' for HTTP headers so that each raw byte maps
+        # to a single codepoint and headers round-trip byte-for-byte.
+        # When None, decoding falls back to the legacy behavior
+        # (try UTF-8 first, then ISO-8859-1), which is used for WARC
+        # record headers (UTF-8 per the WARC spec).
+        self.decode_encoding = decode_encoding
+
+    def _decode_header(self, line):
+        if self.decode_encoding:
+            return to_native_str(line, self.decode_encoding)
+
+        return self.decode_header(line)
 
     def parse(self, stream, full_statusline=None):
         """
@@ -245,7 +324,7 @@ class StatusAndHeadersParser(object):
         if full_statusline is None:
             full_statusline = stream.readline()
 
-        full_statusline = self.decode_header(full_statusline)
+        full_statusline = self._decode_header(full_statusline)
 
         statusline, total_read = _strip_count(full_statusline, 0)
 
@@ -271,7 +350,7 @@ class StatusAndHeadersParser(object):
         else:
             protocol_status = statusline.split(' ', 1)
 
-        line, total_read = _strip_count(self.decode_header(stream.readline()), total_read)
+        line, total_read = _strip_count(self._decode_header(stream.readline()), total_read)
         while line:
             result = line.split(':', 1)
             if len(result) == 2:
@@ -281,14 +360,14 @@ class StatusAndHeadersParser(object):
                 name = result[0]
                 value = None
 
-            next_line, total_read = _strip_count(self.decode_header(stream.readline()),
+            next_line, total_read = _strip_count(self._decode_header(stream.readline()),
                                                  total_read)
 
             # append continuation lines, if any
             while next_line and next_line.startswith((' ', '\t')):
                 if value is not None:
                     value += next_line
-                next_line, total_read = _strip_count(self.decode_header(stream.readline()),
+                next_line, total_read = _strip_count(self._decode_header(stream.readline()),
                                                      total_read)
 
             if value is not None:
@@ -328,6 +407,14 @@ class StatusAndHeadersParser(object):
 
     @staticmethod
     def decode_header(line):
+        """ Legacy header decoding (used for WARC record headers):
+            attempt to decode as utf-8 first, default to ISO-8859-1
+            (which never fails) if the bytes are not valid utf-8.
+
+            HTTP status/header lines are parsed with the parser built
+            with decode_encoding='iso-8859-1' instead, so that each raw
+            byte is preserved exactly.
+        """
         try:
             # attempt to decode as utf-8 first
             return to_native_str(line, 'utf-8')

@@ -65,9 +65,15 @@ class ArcWarcRecordLoader(object):
             self.arc_parser = ARCHeadersParser()
 
         self.warc_parser = StatusAndHeadersParser(self.WARC_TYPES)
-        self.http_parser = StatusAndHeadersParser(self.HTTP_TYPES, verify_http)
 
-        self.http_req_parser = StatusAndHeadersParser(self.HTTP_VERBS, verify_http)
+        # HTTP headers are parsed as ISO-8859-1 so that every raw byte
+        # maps to exactly one codepoint and the original bytes are
+        # preserved when the headers are written back out.
+        self.http_parser = StatusAndHeadersParser(self.HTTP_TYPES, verify_http,
+                                                  decode_encoding='iso-8859-1')
+
+        self.http_req_parser = StatusAndHeadersParser(self.HTTP_VERBS, verify_http,
+                                                      decode_encoding='iso-8859-1')
 
     def parse_record_stream(self, stream,
                             statusline=None,
