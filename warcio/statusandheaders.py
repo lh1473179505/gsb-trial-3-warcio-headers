@@ -29,6 +29,10 @@ class StatusAndHeaders(object):
         self.headers = headers_to_str_headers(headers)
         self.protocol = protocol
         self.total_len = total_len
+        # Raw serialized header block (status line + headers + trailing
+        # blank line), as read from the stream, if known.  Used to write
+        # the headers back out byte-for-byte.  Invalidated whenever the
+        # headers are modified through this object.
         self.headers_buff = None
 
     def get_header(self, name, default_value=None):
@@ -45,12 +49,14 @@ class StatusAndHeaders(object):
 
     def add_header(self, name, value):
         self.headers.append((name, value))
+        self.headers_buff = None
 
     def replace_header(self, name, value):
         """
         replace header with new value or add new header
         return old header value, if any
         """
+        self.headers_buff = None
         name_lower = name.lower()
         for index in range(len(self.headers) - 1, -1, -1):
             curr_name, curr_value = self.headers[index]
@@ -66,6 +72,7 @@ class StatusAndHeaders(object):
         Remove header (case-insensitive)
         return True if header removed, False otherwise
         """
+        self.headers_buff = None
         name_lower = name.lower()
         for index in range(len(self.headers) - 1, -1, -1):
             if self.headers[index][0].lower() == name_lower:
@@ -94,6 +101,7 @@ class StatusAndHeaders(object):
             return True
         except(ValueError, AssertionError):
             self.statusline = valid_statusline
+            self.headers_buff = None
             return False
 
     def add_range(self, start, part_len, total_len):
@@ -110,12 +118,29 @@ class StatusAndHeaders(object):
         self.replace_header('Accept-Ranges', 'bytes')
         return self
 
-    def compute_headers_buffer(self, header_filter=None):
+    def compute_headers_buffer(self, header_filter=None, encode_non_ascii=False):
         """
-        Set buffer representing headers
+        Set buffer representing headers.
+
+        By default, the headers are serialized as raw bytes: if the
+        original header block bytes are known (eg. parsed from a stream)
+        and the headers have not been modified, they are reused as-is.
+        Otherwise, each character is mapped to a single byte via
+        ISO-8859-1 (latin-1), preserving any non-ASCII bytes verbatim
+        (this is lossless for headers parsed from the wire, which are
+        decoded as latin-1).
+
+        If encode_non_ascii is True, any non-ASCII headers are instead
+        %-encoded as UTF-8 (see to_ascii_bytes) -- this rewrites the
+        original bytes and is intended only as an explicit opt-in.
         """
-        # HTTP headers %-encoded as ascii (see to_ascii_bytes for more info)
-        self.headers_buff = self.to_ascii_bytes(header_filter)
+        if encode_non_ascii:
+            # HTTP headers %-encoded as ascii (see to_ascii_bytes for more info)
+            self.headers_buff = self.to_ascii_bytes(header_filter)
+        elif self.headers_buff is None or header_filter:
+            self.headers_buff = self.to_raw_bytes(header_filter)
+
+        return self.headers_buff
 
     def __repr__(self):
         return "StatusAndHeaders(protocol = '{0}', statusline = '{1}', \
@@ -165,10 +190,35 @@ headers = {2})".format(self.protocol, self.statusline, self.headers)
     def to_bytes(self, filter_func=None, encoding='utf-8'):
         return self.to_str(filter_func).encode(encoding) + b'\r\n'
 
+    def to_raw_bytes(self, filter_func=None):
+        """ Encode the headers block as raw bytes, mapping each character
+            to a single byte via ISO-8859-1 (latin-1).  Since headers
+            parsed from the wire are decoded as latin-1, this preserves
+            any non-ASCII bytes exactly as received.
+
+            If the headers contain characters outside the latin-1 range
+            (eg. non-latin-1 unicode strings passed in directly), fall
+            back to %-encoding those headers as UTF-8 (see to_ascii_bytes)
+            so that the headers remain serializable.
+        """
+        try:
+            string = self.to_str(filter_func)
+            string = string.encode('iso-8859-1')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return self.to_ascii_bytes(filter_func)
+
+        return string + b'\r\n'
+
     def to_ascii_bytes(self, filter_func=None):
-        """ Attempt to encode the headers block as ascii
+        """ Attempt to encode the headers block as ascii.
             If encoding fails, call percent_encode_non_ascii_headers()
-            to encode any headers per RFCs
+            to encode any headers per RFCs.
+
+            Note: this rewrites non-ASCII header values as UTF-8
+            %-encoded text and thus does NOT preserve the original
+            bytes.  It is kept as an explicit opt-in (see
+            compute_headers_buffer(encode_non_ascii=True)); the default
+            serialization path is to_raw_bytes().
         """
         try:
             string = self.to_str(filter_func)
@@ -239,11 +289,19 @@ class StatusAndHeadersParser(object):
         return a StatusAndHeaders object
 
         support continuation headers starting with space or tab
+
+        the raw bytes of the full header block (status line, headers and
+        trailing blank line) are stored on the returned object as
+        headers_buff, so that the headers can be written back out
+        byte-for-byte
         """
+        raw_lines = []
 
         # status line w newlines intact
         if full_statusline is None:
             full_statusline = stream.readline()
+
+        raw_lines.append(full_statusline)
 
         full_statusline = self.decode_header(full_statusline)
 
@@ -255,10 +313,8 @@ class StatusAndHeadersParser(object):
         if total_read == 0:
             raise EOFError()
         elif not statusline:
-            return StatusAndHeaders(statusline=statusline,
-                                    headers=headers,
-                                    protocol='',
-                                    total_len=total_read)
+            return self._make_status_and_headers(statusline, headers, '',
+                                                 total_read, raw_lines)
 
         # validate only if verify is set
         if self.verify:
@@ -271,7 +327,7 @@ class StatusAndHeadersParser(object):
         else:
             protocol_status = statusline.split(' ', 1)
 
-        line, total_read = _strip_count(self.decode_header(stream.readline()), total_read)
+        line, total_read = _strip_count(self._readline(stream, raw_lines), total_read)
         while line:
             result = line.split(':', 1)
             if len(result) == 2:
@@ -281,14 +337,14 @@ class StatusAndHeadersParser(object):
                 name = result[0]
                 value = None
 
-            next_line, total_read = _strip_count(self.decode_header(stream.readline()),
+            next_line, total_read = _strip_count(self._readline(stream, raw_lines),
                                                  total_read)
 
             # append continuation lines, if any
             while next_line and next_line.startswith((' ', '\t')):
                 if value is not None:
                     value += next_line
-                next_line, total_read = _strip_count(self.decode_header(stream.readline()),
+                next_line, total_read = _strip_count(self._readline(stream, raw_lines),
                                                      total_read)
 
             if value is not None:
@@ -302,10 +358,41 @@ class StatusAndHeadersParser(object):
         else:
             statusline = ''
 
-        return StatusAndHeaders(statusline=statusline,
-                                headers=headers,
-                                protocol=protocol_status[0],
-                                total_len=total_read)
+        return self._make_status_and_headers(statusline, headers,
+                                             protocol_status[0],
+                                             total_read, raw_lines)
+
+    def _readline(self, stream, raw_lines):
+        line = stream.readline()
+        raw_lines.append(line)
+        return self.decode_header(line)
+
+    @staticmethod
+    def _make_status_and_headers(statusline, headers, protocol, total_len, raw_lines):
+        status_headers = StatusAndHeaders(statusline=statusline,
+                                          headers=headers,
+                                          protocol=protocol,
+                                          total_len=total_len)
+        status_headers.headers_buff = StatusAndHeadersParser._join_raw_lines(raw_lines)
+        return status_headers
+
+    @staticmethod
+    def _join_raw_lines(raw_lines):
+        """ Join the raw header lines back into the original header block
+            bytes.  Lines read as text are encoded as ISO-8859-1, matching
+            the wire decoding.  If the lines can not be faithfully
+            re-encoded, return None (headers will be re-serialized instead).
+        """
+        try:
+            if all(isinstance(line, bytes) for line in raw_lines):
+                return b''.join(raw_lines)
+
+            if all(isinstance(line, str) for line in raw_lines):
+                return ''.join(raw_lines).encode('iso-8859-1')
+        except UnicodeEncodeError:
+            pass
+
+        return None
 
     @staticmethod
     def split_prefix(key, prefixs):

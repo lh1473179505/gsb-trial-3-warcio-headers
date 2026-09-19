@@ -783,46 +783,90 @@ class TestWarcWriter(object):
 
         validate_warcinfo(records[0])
 
-    def test_utf8_rewrite_content_adjust(self):
-        UTF8_PAYLOAD = u'\
+    def test_non_ascii_headers_preserved_on_rewrite(self):
+        # Non-ASCII bytes in an HTTP header block must be preserved
+        # byte-for-byte when rewriting a WARC: the headers are not
+        # %-encoded as UTF-8.  The stored block digest is correct for
+        # the raw header bytes, as written by a capture tool.
+        filename_bytes = 'filename="испытание.txt"'.encode('utf-8')
+        UTF8_PAYLOAD = (b'\
 HTTP/1.0 200 OK\r\n\
 Content-Type: text/plain; charset="UTF-8"\r\n\
-Content-Disposition: attachment; filename="испытание.txt"\r\n\
-Custom-Header: somevalue\r\n\
-Unicode-Header: %F0%9F%93%81%20text%20%F0%9F%97%84%EF%B8%8F\r\n\
+Content-Disposition: attachment; ' + filename_bytes + b'\r\n\
+X-Latin1: \xff\r\n\
 \r\n\
 some\n\
-text'
+text')
 
-        content_length = len(UTF8_PAYLOAD.encode('utf-8'))
+        content_length = len(UTF8_PAYLOAD)
 
-        UTF8_RECORD = u'\
+        from warcio.utils import Digester
+        digester = Digester('sha1')
+        digester.update(UTF8_PAYLOAD)
+        block_digest = str(digester)
+
+        UTF8_RECORD = (b'\
 WARC/1.0\r\n\
 WARC-Type: response\r\n\
 WARC-Record-ID: <urn:uuid:12345678-feb0-11e6-8f83-68a86d1772ce>\r\n\
 WARC-Target-URI: http://example.com/\r\n\
 WARC-Date: 2000-01-01T00:00:00Z\r\n\
-WARC-Payload-Digest: sha1:B6QJ6BNJ3R4B23XXMRKZKHLPGJY2VE4O\r\n\
-WARC-Block-Digest: sha1:KMUABC6URWIQ7QXCZDQ5FS6WIBBFRORR\r\n\
+WARC-Block-Digest: ' + block_digest.encode('ascii') + b'\r\n\
 Content-Type: application/http; msgtype=response\r\n\
 Content-Length: {0}\r\n\
 \r\n\
 {1}\r\n\
-\r\n\
-'.format(content_length, UTF8_PAYLOAD)
+\r\n'
+            ).replace(b'{0}', str(content_length).encode('ascii')) \
+             .replace(b'{1}', UTF8_PAYLOAD)
 
-        assert(content_length == 226)
+        # the source WARC itself passes digest verification
+        for src_record in ArchiveIterator(BytesIO(UTF8_RECORD), check_digests='raise'):
+            src_record.content_stream().read()
 
-        record = ArcWarcRecordLoader().parse_record_stream(BytesIO(UTF8_RECORD.encode('utf-8')))
+        record = ArcWarcRecordLoader().parse_record_stream(BytesIO(UTF8_RECORD))
 
         writer = BufferWARCWriter(gzip=False)
         writer.write_record(record)
 
         raw_buff = writer.get_contents()
-        assert raw_buff.decode('utf-8') == RESPONSE_RECORD_UNICODE_HEADERS
 
-        for record in ArchiveIterator(writer.get_stream()):
-            assert record.length == 268
+        # header block is the original bytes, not UTF-8 %-encoded text
+        assert b'X-Latin1: \xff' in raw_buff
+        assert b'%C3%BF' not in raw_buff
+        assert 'filename="испытание.txt"'.encode('utf-8') in raw_buff
+        assert b"filename*=UTF-8" not in raw_buff
+
+        # the rewritten WARC also passes digest verification
+        for new_record in ArchiveIterator(writer.get_stream(), check_digests='raise'):
+            assert new_record.length == content_length
+            new_record.content_stream().read()
+
+    def test_encode_non_ascii_headers_opt_in(self):
+        # the legacy UTF-8 %-encoding behavior is still available as an
+        # explicit opt-in
+        writer = BufferWARCWriter(gzip=False, encode_non_ascii_headers=True)
+
+        headers_list = [('Content-Type', 'text/plain; charset="UTF-8"'),
+                        ('Content-Disposition', u'attachment; filename="испытание.txt"'),
+                        ('Custom-Header', 'somevalue'),
+                        ('Latin1-Header', '\xff'),
+                       ]
+
+        payload = b'some\ntext'
+
+        http_headers = StatusAndHeaders('200 OK', headers_list, protocol='HTTP/1.0')
+
+        record = writer.create_warc_record('http://example.com/', 'response',
+                                           payload=BytesIO(payload),
+                                           length=len(payload),
+                                           http_headers=http_headers)
+
+        writer.write_record(record)
+
+        raw_buff = writer.get_contents()
+        assert b"filename*=UTF-8''%D0%B8%D1%81%D0%BF%D1%8B%D1%82%D0%B0%D0%BD%D0%B8%D0%B5.txt" in raw_buff
+        assert b'Latin1-Header: %C3%BF' in raw_buff
 
     def test_identity(self):
         """ read(write(record)) should yield record """

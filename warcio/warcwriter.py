@@ -13,7 +13,8 @@ class BaseWARCWriter(RecordBuilder):
 
     def __init__(self, gzip=True, *args, **kwargs):
         super(BaseWARCWriter, self).__init__(warc_version=kwargs.get('warc_version'),
-                                             header_filter=kwargs.get('header_filter'))
+                                             header_filter=kwargs.get('header_filter'),
+                                             encode_non_ascii_headers=kwargs.get('encode_non_ascii_headers', False))
         self.gzip = gzip
         self.hostname = gethostname()
 
@@ -43,7 +44,8 @@ class BaseWARCWriter(RecordBuilder):
             out = GzippingWrapper(out)
 
         if record.http_headers:
-            record.http_headers.compute_headers_buffer(self.header_filter)
+            record.http_headers.compute_headers_buffer(self.header_filter,
+                                                       self.encode_non_ascii_headers)
 
         # Content-Length is None/unknown
         # Fix record by: buffering and recomputing all digests and length

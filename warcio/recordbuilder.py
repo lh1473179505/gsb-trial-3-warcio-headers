@@ -30,10 +30,15 @@ class RecordBuilder(object):
     NO_PAYLOAD_DIGEST_TYPES = ('warcinfo', 'revisit')
 
 
-    def __init__(self, warc_version=None, header_filter=None):
+    def __init__(self, warc_version=None, header_filter=None, encode_non_ascii_headers=False):
         self.warc_version = self._parse_warc_version(warc_version)
 
         self.header_filter = header_filter
+
+        # if True, non-ASCII http headers are %-encoded as UTF-8 when
+        # writing (legacy behavior); if False (default), the original
+        # header bytes are preserved verbatim
+        self.encode_non_ascii_headers = encode_non_ascii_headers
 
     def create_warcinfo_record(self, filename, info):
         warc_headers = StatusAndHeaders('', [], protocol=self.warc_version)
@@ -185,7 +190,8 @@ class RecordBuilder(object):
 
         if block_digester and record.http_headers:
             if not record.http_headers.headers_buff:
-                record.http_headers.compute_headers_buffer(self.header_filter)
+                record.http_headers.compute_headers_buffer(self.header_filter,
+                                                           self.encode_non_ascii_headers)
             block_digester.update(record.http_headers.headers_buff)
 
         for buf in self._iter_stream(record.raw_stream):

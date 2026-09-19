@@ -1,3 +1,19 @@
+Unreleased
+~~~~~~~~~~
+
+- HTTP header blocks are now written to WARC records byte-for-byte as
+  received: non-ASCII header bytes (eg. Latin-1 ``0xff``) are no longer
+  rewritten as UTF-8 %-encoded text (``%C3%BF``).  ``StatusAndHeadersParser``
+  stores the raw parsed header block on ``StatusAndHeaders.headers_buff``,
+  and ``compute_headers_buffer()`` serializes via the new
+  ``StatusAndHeaders.to_raw_bytes()`` (ISO-8859-1), so reading a WARC and
+  writing it back preserves the original header bytes.  The legacy UTF-8
+  %-encoding remains available as an explicit opt-in via
+  ``WARCWriter(encode_non_ascii_headers=True)`` /
+  ``RecordBuilder(encode_non_ascii_headers=True)`` and
+  ``StatusAndHeaders.to_ascii_bytes()``.
+
+
 1.8.1
 ~~~~~
 

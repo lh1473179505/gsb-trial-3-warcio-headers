@@ -244,6 +244,37 @@ WARC 1.1:
     WARC-Date: 2018-12-26T10:11:12.456789Z
     
     
+HTTP Header Encoding
+~~~~~~~~~~~~~~~~~~~~
+
+The HTTP status line and header block of a ``response``/``request``/``revisit``
+record is archived as it was received on the wire.  When a record is parsed
+from a payload or an existing WARC file, the exact original header bytes
+(including any non-ASCII bytes, such as Latin-1 ``0xff`` sent by legacy
+servers) are stored and written back out verbatim.  Likewise, header values
+passed in via ``StatusAndHeaders`` (or the ``http_headers=`` argument) are
+serialized with ISO-8859-1 (Latin-1), so a single ``\xff`` character/byte
+stays the single byte ``0xff``.  Header values are never silently rewritten
+as UTF-8 percent-encoded text (e.g. ``0xff`` -> ``%C3%BF``), and the
+``WARC-Block-Digest`` is computed over the exact stored header bytes.
+
+Reading an existing WARC and writing it out again therefore keeps the HTTP
+header block byte-for-byte identical (modifying a parsed record's headers
+invalidates the stored bytes, and the headers are re-serialized the same
+way).
+
+If a genuine Unicode string outside the Latin-1 range is used as a header
+value, it cannot map to a single byte and warcio falls back to the legacy
+UTF-8 percent-encoding (RFC 5987 / 8187) for that header, so serializing
+such headers does not raise.  The legacy "always percent-encode non-ASCII
+headers as UTF-8" behavior is also available explicitly:
+
+.. code:: python
+
+    WARCWriter(fh, encode_non_ascii_headers=True)
+
+or via ``StatusAndHeaders.to_ascii_bytes()``.  This path is opt-in: the
+default capture / write path always preserves the raw bytes.
 
 Filtering HTTP Capture
 ~~~~~~~~~~~~~~~~~~~~~~
