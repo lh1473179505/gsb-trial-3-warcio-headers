@@ -8,10 +8,15 @@ CODEX=/work/runtime/codex
 PROMPT=/work/delivery/prompt.txt
 INIT=$(git -C /work/candidates/warcio rev-parse HEAD)
 
-# start transport proxy on host network (container uses host net)
-pkill -f 'transport_proxy.py' 2>/dev/null || true
+# Start transport proxy. Do NOT pkill -f the script name (self-kill).
+if [ -f /work/logs/transport_proxy.pid ]; then
+  kill "$(cat /work/logs/transport_proxy.pid)" 2>/dev/null || true
+  rm -f /work/logs/transport_proxy.pid
+fi
 sleep 1
+: > /work/logs/transport_proxy.log
 nohup python3 /work/scripts/transport_proxy.py > /work/logs/transport_proxy.log 2>&1 &
+echo $! > /work/logs/transport_proxy.pid
 for i in $(seq 1 50); do grep -q listening /work/logs/transport_proxy.log && break; sleep 0.2; done
 grep -q listening /work/logs/transport_proxy.log
 
@@ -58,7 +63,8 @@ PY
 
 # preflight
 mkdir -p /work/preflight
-"$CODEX" exec -C /work/runs/A --json -o /work/preflight/final.txt - <<<"Reply with exactly: PREFLIGHT_OK. Do not modify any files." \
+printf '%s\n' 'Reply with exactly: PREFLIGHT_OK. Do not modify any files.' > /work/preflight/prompt.txt
+"$CODEX" exec -C /work/runs/A --json -o /work/preflight/final.txt - < /work/preflight/prompt.txt \
   > /work/preflight/events.jsonl 2> /work/preflight/stderr.txt
 python3 - <<'PY'
 import json
