@@ -1,4 +1,4 @@
-﻿model = "auto_model/urm"
+model = "auto_model/urm"
 model_provider = "gsb_relay"
 model_reasoning_effort = "high"
 model_context_window = 1000000

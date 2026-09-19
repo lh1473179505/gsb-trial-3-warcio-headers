@@ -1,1 +1,62 @@
-﻿{"models":[{"slug":"auto_model/urm","display_name":"auto_model/urm","description":"GSB","context_window":1000000,"max_context_window":1000000,"auto_compact_token_limit":950000,"default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"low","description":"l"},{"effort":"medium","description":"m"},{"effort":"high","description":"h"},{"effort":"xhigh","description":"x"}],"input_modalities":["text","image"],"visibility":"list","supported_in_api":true,"shell_type":"shell_command","priority":0,"supports_reasoning_summaries":true}]}
+{
+  "models": [
+    {
+      "slug": "auto_model/urm",
+      "display_name": "auto_model/urm",
+      "description": "GSB trial model",
+      "context_window": 1000000,
+      "max_context_window": 1000000,
+      "auto_compact_token_limit": 950000,
+      "default_reasoning_level": "high",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "low"
+        },
+        {
+          "effort": "medium",
+          "description": "medium"
+        },
+        {
+          "effort": "high",
+          "description": "high"
+        },
+        {
+          "effort": "xhigh",
+          "description": "xhigh"
+        }
+      ],
+      "input_modalities": [
+        "text",
+        "image"
+      ],
+      "visibility": "list",
+      "supported_in_api": true,
+      "shell_type": "shell_command",
+      "priority": 0,
+      "supports_reasoning_summaries": true,
+      "base_instructions": "You are Codex, a coding agent. Follow the user request carefully.",
+      "instructions_variables": {},
+      "experimental_supported_tools": [],
+      "available_in_plans": [
+        "pro",
+        "team",
+        "business",
+        "enterprise"
+      ],
+      "tool_mode": null,
+      "use_responses_lite": false,
+      "prefer_websockets": false,
+      "support_verbosity": true,
+      "default_verbosity": "low",
+      "supports_parallel_tool_calls": true,
+      "reasoning_summary_format": "experimental",
+      "default_reasoning_summary": "none",
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "apply_patch_tool_type": "freeform"
+    }
+  ]
+}
